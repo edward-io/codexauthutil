@@ -127,6 +127,35 @@ def clear_pending_login() -> None:
     _pending_login_path().unlink(missing_ok=True)
 
 
+def _decode_jwt_payload(token: str) -> dict | None:
+    if not isinstance(token, str) or token.count(".") < 2:
+        return None
+
+    payload = token.split(".")[1]
+    payload += "=" * (-len(payload) % 4)
+    try:
+        decoded = base64.urlsafe_b64decode(payload.encode("ascii"))
+        claims = json.loads(decoded)
+    except (ValueError, json.JSONDecodeError, UnicodeDecodeError):
+        return None
+    return claims if isinstance(claims, dict) else None
+
+
+def _account_id_from_id_token(id_token: str) -> str | None:
+    claims = _decode_jwt_payload(id_token)
+    if not claims:
+        return None
+
+    openai_auth = claims.get("https://api.openai.com/auth")
+    if not isinstance(openai_auth, dict):
+        return None
+
+    account_id = openai_auth.get("chatgpt_account_id")
+    if isinstance(account_id, str) and account_id.strip():
+        return account_id
+    return None
+
+
 def parse_callback(callback_url: str) -> tuple[str, dict]:
     """Validate the callback URL and return (code, pending_state)."""
     pending = _load_pending_login()
@@ -177,6 +206,10 @@ async def exchange_code(callback_url: str) -> dict:
     for key in ("refresh_token", "id_token", "account_id"):
         if key in data and data[key]:
             tokens[key] = data[key]
+    if "account_id" not in tokens and "id_token" in tokens:
+        account_id = _account_id_from_id_token(tokens["id_token"])
+        if account_id:
+            tokens["account_id"] = account_id
 
     return {
         "auth_mode": "chatgpt",

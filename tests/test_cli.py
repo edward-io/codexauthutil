@@ -138,7 +138,11 @@ def test_login_success_saves_profile_and_shows_list(runner, monkeypatch):
             return {
                 "access_token": "new-access",
                 "refresh_token": "new-refresh",
-                "id_token": "new-id",
+                "id_token": _jwt({
+                    "https://api.openai.com/auth": {
+                        "chatgpt_account_id": "acct-from-id-token",
+                    },
+                }),
             }
 
     class FakeAsyncClient:
@@ -172,8 +176,56 @@ def test_login_success_saves_profile_and_shows_list(runner, monkeypatch):
     saved = store_module.load_profile("work")
     assert saved["tokens"]["access_token"] == "new-access"
     assert saved["tokens"]["refresh_token"] == "new-refresh"
-    assert saved["tokens"]["id_token"] == "new-id"
+    assert saved["tokens"]["account_id"] == "acct-from-id-token"
     assert pending_path.exists() is False
+
+
+def test_login_preserves_token_response_account_id(runner, monkeypatch):
+    callback_url = "http://127.0.0.1:1455/callback?code=abc123&state=state-1"
+
+    monkeypatch.setattr(oauth_module, "load_oauth_config", lambda: {
+        "client_id": "client-123",
+        "redirect_uri": "http://localhost:1455/auth/callback",
+        "scope": "openid profile email offline_access",
+        "originator": "codex_cli_rs",
+    })
+    monkeypatch.setattr(oauth_module.secrets, "token_urlsafe", lambda n: "state-1" if n == 32 else "verifier-1")
+
+    class FakeResponse:
+        status_code = 200
+
+        def json(self):
+            return {
+                "access_token": "new-access",
+                "refresh_token": "new-refresh",
+                "id_token": _jwt({
+                    "https://api.openai.com/auth": {
+                        "chatgpt_account_id": "acct-from-id-token",
+                    },
+                }),
+                "account_id": "acct-from-response",
+            }
+
+    class FakeAsyncClient:
+        def __init__(self, timeout):
+            self.timeout = timeout
+
+        async def __aenter__(self):
+            return self
+
+        async def __aexit__(self, exc_type, exc, tb):
+            return False
+
+        async def post(self, url, json):
+            return FakeResponse()
+
+    monkeypatch.setattr(oauth_module.httpx, "AsyncClient", FakeAsyncClient)
+
+    result = runner.invoke(cli, ["login", "work"], input=f"{callback_url}\n")
+
+    assert result.exit_code == 0
+    saved = store_module.load_profile("work")
+    assert saved["tokens"]["account_id"] == "acct-from-response"
 
 
 def test_login_without_name_prompts_for_profile_name(runner, monkeypatch):
