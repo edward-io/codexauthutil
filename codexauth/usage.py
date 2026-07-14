@@ -10,6 +10,8 @@ from codexauth.refresh import needs_refresh, refresh_tokens
 from codexauth.store import save_profile
 
 USAGE_URL = "https://chatgpt.com/backend-api/wham/usage"
+RESET_CREDITS_URL = "https://chatgpt.com/backend-api/wham/rate-limit-reset-credits"
+RESET_CREDITS_TIMEOUT_SECONDS = 5
 DEFAULT_USAGE_CONCURRENCY = 8
 SHORT_WINDOW_SECONDS = 5 * 60 * 60
 WEEKLY_WINDOW_SECONDS = 7 * 24 * 60 * 60
@@ -25,6 +27,15 @@ class UsageWindow:
     limit_window_seconds: int | None = None
 
 
+@dataclass
+class UsageResetCredit:
+    id: str
+    expires_at: datetime | None = None
+    granted_at: datetime | None = None
+    title: str | None = None
+    reset_type: str | None = None
+
+
 class UsageResult:
     def __init__(
         self,
@@ -33,6 +44,8 @@ class UsageResult:
         primary_reset_at=None,
         secondary_reset_at=None,
         windows=None,
+        reset_count=None,
+        reset_credits=None,
         error=None,
     ):
         resolved_windows = dict(windows or {})
@@ -53,6 +66,8 @@ class UsageResult:
                 reset_at=secondary_reset_at,
             )
         self.windows = resolved_windows
+        self.reset_count = reset_count
+        self.reset_credits = reset_credits
         self.error = error                # None | "expired" | "n/a"
 
     @property
@@ -85,6 +100,75 @@ def _parse_reset_at(value):
         return datetime(1970, 1, 1, tzinfo=timezone.utc) + timedelta(seconds=float(value))
     except (TypeError, ValueError, OverflowError):
         return None
+
+
+def _parse_rfc3339(value):
+    if not isinstance(value, str) or not value.strip():
+        return None
+    try:
+        parsed = datetime.fromisoformat(value.replace("Z", "+00:00"))
+    except ValueError:
+        return None
+    if parsed.tzinfo is None:
+        return None
+    return parsed.astimezone(timezone.utc)
+
+
+def _parse_available_count(value):
+    if isinstance(value, bool):
+        return None
+    try:
+        parsed = int(value)
+    except (TypeError, ValueError, OverflowError):
+        return None
+    return parsed if parsed >= 0 else None
+
+
+def _parse_reset_credit_summary(value) -> int | None:
+    if not isinstance(value, dict):
+        return None
+    return _parse_available_count(value.get("available_count"))
+
+
+def _parse_reset_credit_details(value) -> tuple[int, list[UsageResetCredit]] | None:
+    if not isinstance(value, dict) or not isinstance(value.get("credits"), list):
+        return None
+
+    available_count = _parse_available_count(value.get("available_count"))
+    if available_count is None:
+        return None
+
+    credits: list[UsageResetCredit] = []
+    for item in value["credits"]:
+        if not isinstance(item, dict) or item.get("status") != "available":
+            continue
+
+        credit_id = item.get("id")
+        granted_at = _parse_rfc3339(item.get("granted_at"))
+        if not isinstance(credit_id, str) or not credit_id or granted_at is None:
+            return None
+
+        raw_expires_at = item.get("expires_at")
+        expires_at = _parse_rfc3339(raw_expires_at)
+        if raw_expires_at is not None and expires_at is None:
+            return None
+
+        title = item.get("title")
+        reset_type = item.get("reset_type")
+        credits.append(
+            UsageResetCredit(
+                id=credit_id,
+                expires_at=expires_at,
+                granted_at=granted_at,
+                title=title if isinstance(title, str) else None,
+                reset_type=reset_type if isinstance(reset_type, str) else None,
+            )
+        )
+
+    credits.sort(
+        key=lambda credit: credit.expires_at or datetime.max.replace(tzinfo=timezone.utc)
+    )
+    return available_count, credits
 
 
 def _parse_limit_window_seconds(value):
@@ -227,6 +311,29 @@ def _parse_additional_rate_limits(items) -> dict[str, UsageWindow]:
     return windows
 
 
+async def _fetch_usage_and_reset_credits(
+    client: httpx.AsyncClient,
+    headers: dict[str, str],
+) -> tuple[httpx.Response, tuple[int, list[UsageResetCredit]] | None]:
+    async def fetch_reset_credits():
+        try:
+            response = await asyncio.wait_for(
+                client.get(RESET_CREDITS_URL, headers=headers),
+                timeout=RESET_CREDITS_TIMEOUT_SECONDS,
+            )
+            if response.status_code != 200:
+                return None
+            return _parse_reset_credit_details(response.json())
+        except Exception:
+            return None
+
+    usage_response, reset_credit_details = await asyncio.gather(
+        client.get(USAGE_URL, headers=headers),
+        fetch_reset_credits(),
+    )
+    return usage_response, reset_credit_details
+
+
 async def fetch_usage(
     name: str,
     profile: dict,
@@ -264,9 +371,13 @@ async def fetch_usage(
     try:
         if usage_client is None:
             async with httpx.AsyncClient(timeout=15) as owned_client:
-                resp = await owned_client.get(USAGE_URL, headers=headers)
+                resp, reset_credit_details = await _fetch_usage_and_reset_credits(
+                    owned_client, headers
+                )
         else:
-            resp = await usage_client.get(USAGE_URL, headers=headers)
+            resp, reset_credit_details = await _fetch_usage_and_reset_credits(
+                usage_client, headers
+            )
         if resp.status_code in (401, 403):
             return name, UsageResult(error="expired"), refreshed
         if resp.status_code != 200:
@@ -275,9 +386,17 @@ async def fetch_usage(
         rl = data.get("rate_limit", {})
         windows = _parse_usage_windows(rl)
         windows.update(_parse_additional_rate_limits(data.get("additional_rate_limits", [])))
+        reset_count = _parse_reset_credit_summary(data.get("rate_limit_reset_credits"))
+        reset_credits = None
+        if reset_credit_details is not None:
+            reset_count, reset_credits = reset_credit_details
         return (
             name,
-            UsageResult(windows=windows),
+            UsageResult(
+                windows=windows,
+                reset_count=reset_count,
+                reset_credits=reset_credits,
+            ),
             refreshed,
         )
     except Exception:

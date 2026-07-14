@@ -105,11 +105,12 @@ the matching local stored profile should be considered disallowed.
 - Lists all stored profiles.
 - Optionally fetches usage data unless `--no-usage` is passed.
 - Shows the current active profile in a width-aware Rich view.
-- For ChatGPT-backed profiles with live usage data, shows four usage-related columns:
+- For ChatGPT-backed profiles with live usage data, shows four quota-window columns:
   - 5-hour usage percentage
   - time left until the 5-hour window resets
   - weekly usage percentage
   - time left until the weekly window resets
+- Shows each available earned usage-limit reset's local expiration date as abbreviated month plus day in a separate column, without displaying the available count.
 - Uses the full multi-column table on wide terminals, a compact table on medium widths, and a stacked per-profile layout on narrow screens so phone-sized terminals remain readable.
 - Can prompt the user to activate a profile interactively unless `--no-interactive` is passed.
 - Excludes hidden profiles by default. `--all` includes hidden profiles and
@@ -386,10 +387,13 @@ Usage lookup is only attempted for ChatGPT-backed profiles. For each eligible pr
 1. Read the access token and optional account ID.
 2. Check whether the profile appears stale using `last_refresh`.
 3. Refresh tokens first if needed.
-4. Send a request to the usage endpoint.
+4. Concurrently request the usage endpoint and the reset-credit detail endpoint.
 5. Extract the standard primary and secondary usage windows from the top-level `rate_limit` object.
 6. Extract any named additional limits from `additional_rate_limits[]`, preserving each entry's `limit_name`.
-7. Apply presentation-friendly labels in the renderer where needed; for example, the UI shortens `GPT-5.3-Codex-Spark` to `Spark` and `GPT-5.3-Codex-Spark Weekly` to `Spark Weekly`.
+7. Read `rate_limit_reset_credits.available_count` from the usage response as a fallback, then prefer the detailed reset-credit response when available so each available credit's expiration can be shown.
+8. Apply presentation-friendly labels in the renderer where needed; for example, the UI shortens `GPT-5.3-Codex-Spark` to `Spark` and `GPT-5.3-Codex-Spark Weekly` to `Spark Weekly`.
+
+Reset-credit details are read-only in this utility. Available credits are sorted by expiration, credits with no expiration are shown last, and a detail-request failure does not discard a count successfully returned by the usage endpoint.
 
 The CLI fetches usage concurrently for all profiles with `asyncio.gather`, which keeps the list command responsive even when several profiles are stored.
 

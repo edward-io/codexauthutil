@@ -96,6 +96,40 @@ def _fmt_time_left_narrow(reset_at, error: str | None, now: datetime | None = No
     return padded
 
 
+def _as_local_time(value: datetime) -> datetime:
+    return value.astimezone()
+
+
+def _reset_credit_expiry_text(expires_at: datetime | None) -> str:
+    if expires_at is None:
+        return "Does not expire"
+    local_expiry = _as_local_time(expires_at)
+    return f"{local_expiry:%b} {local_expiry.day}"
+
+
+def _fmt_usage_resets(usage: UsageResult) -> str:
+    if usage.error == "expired":
+        return "[red]expired[/red]"
+    if usage.error or usage.reset_count is None:
+        return "[dim]N/A[/dim]"
+
+    count = max(0, usage.reset_count)
+    if count == 0:
+        return "[dim]—[/dim]"
+
+    if usage.reset_credits is None:
+        return "[dim]Unavailable[/dim]"
+
+    displayed_credits = usage.reset_credits[:count]
+    lines = list(
+        f"[green]{_reset_credit_expiry_text(credit.expires_at)}[/green]"
+        for credit in displayed_credits
+    )
+    if len(displayed_credits) < count:
+        lines.append("[dim]Unavailable[/dim]")
+    return "\n".join(lines)
+
+
 def _active_marker(name: str, active: str | None) -> str:
     return "[green]●[/green]" if name == active else ""
 
@@ -219,6 +253,7 @@ def _render_full_table(
         spec = _spec_for_key(usage_map, key)
         table.add_column(spec["full_pct"], min_width=9, max_width=10)
         table.add_column(spec["full_left"], min_width=10, max_width=12)
+    table.add_column("Reset Expires", min_width=10, max_width=15)
     table.add_column("", width=2)
 
     for i, name in enumerate(profiles, 1):
@@ -237,6 +272,7 @@ def _render_full_table(
                     _fmt_time_left(window.reset_at, u.error),
                 ]
             )
+        row.append(_fmt_usage_resets(u))
         row.append(_active_marker(name, active))
         table.add_row(*row)
     return table
@@ -264,6 +300,7 @@ def _render_compact_table(
         spec = _spec_for_key(usage_map, key)
         table.add_column(spec["compact_pct"], min_width=10)
         table.add_column(spec["compact_left"], min_width=5)
+    table.add_column("Reset Exp.", min_width=10, max_width=15)
     table.add_column("", width=1)
 
     for i, name in enumerate(profiles, 1):
@@ -282,6 +319,7 @@ def _render_compact_table(
                     _fmt_time_left(window.reset_at, u.error),
                 ]
             )
+        row.append(_fmt_usage_resets(u))
         row.append(_active_marker(name, active))
         table.add_row(*row)
     return table
@@ -321,6 +359,10 @@ def _render_narrow_profiles(
                 f"/{_fmt_time_left_narrow(window.reset_at, u.error)}"
             )
             renders.append(usage)
+        resets = Text.from_markup(
+            f"[bold]{'reset':<6}[/bold] {_fmt_usage_resets(u)}"
+        )
+        renders.append(resets)
         renders.append(Text(""))
 
     return Group(*renders)
