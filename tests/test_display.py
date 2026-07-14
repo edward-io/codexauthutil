@@ -6,7 +6,7 @@ from rich.console import Console
 
 import codexauth.display as display_module
 from codexauth.display import render_table
-from codexauth.usage import UsageResult, UsageWindow
+from codexauth.usage import UsageResetCredit, UsageResult, UsageWindow
 
 
 def test_render_table_shows_usage_and_time_left_columns(monkeypatch):
@@ -44,6 +44,59 @@ def test_render_table_shows_usage_and_time_left_columns(monkeypatch):
     assert "38%" in output
     assert "4h 12m" in output
     assert "2d 3h" in output
+
+
+def test_render_table_shows_available_usage_resets_and_expirations(monkeypatch):
+    monkeypatch.setattr(display_module, "_as_local_time", lambda value: value)
+
+    table = render_table(
+        profiles=["work", "personal"],
+        profile_data={
+            "work": {"auth_mode": "chatgpt"},
+            "personal": {"auth_mode": "chatgpt"},
+        },
+        usage_map={
+            "work": UsageResult(
+                reset_count=2,
+                reset_credits=[
+                    UsageResetCredit(
+                        id="credit-1",
+                        expires_at=datetime(2026, 7, 17, 9, 39, tzinfo=timezone.utc),
+                    ),
+                    UsageResetCredit(id="credit-2", expires_at=None),
+                ],
+            ),
+            "personal": UsageResult(reset_count=0, reset_credits=[]),
+        },
+        active=None,
+        width=200,
+    )
+
+    console = Console(record=True, width=200)
+    console.print(table)
+    output = console.export_text()
+
+    assert "Reset Expires" in output
+    assert "2 available" not in output
+    assert "Jul 17" in output
+    assert "2026-07-17" not in output
+    assert "Does not expire" in output
+
+
+def test_render_table_shows_reset_expiry_fallback_on_narrow_width():
+    table = render_table(
+        profiles=["work"],
+        profile_data={"work": {"auth_mode": "chatgpt"}},
+        usage_map={"work": UsageResult(reset_count=3, reset_credits=None)},
+        active=None,
+        width=50,
+    )
+
+    console = Console(record=True, width=50)
+    console.print(table)
+    output = console.export_text()
+
+    assert "reset  Unavailable" in output
 
 
 def test_render_table_uses_stacked_layout_on_narrow_width(monkeypatch):

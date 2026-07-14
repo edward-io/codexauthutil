@@ -1,6 +1,6 @@
 # codexauthutil
 
-A small CLI utility for managing multiple [OpenAI Codex](https://github.com/openai/codex) `auth.json` profiles. Switch between accounts instantly and see live quota usage and reset countdowns for each one.
+A small CLI utility for managing multiple [OpenAI Codex](https://github.com/openai/codex) `auth.json` profiles. Switch between accounts instantly and see live quota usage, reset countdowns, and earned usage-limit reset credits for each one.
 
 ## Why
 
@@ -80,9 +80,9 @@ Or just
 ./codexauth.py
 ```
 ```
-  #  Name        Mode      5h Used        5h Left   Weekly        Weekly Left
-  1  work        chatgpt   ████░ 74%      4h 12m    ████░ 74%     2d 3h        ●
-  2  personal    chatgpt   █░░░░ 12%      53m       ██░░░ 38%     5d 8h
+  #  Name        Mode      5h Used        5h Left   Weekly        Weekly Left   Reset Expires
+  1  work        chatgpt   ████░ 74%      4h 12m    ████░ 74%     2d 3h         Jul 17   ●
+  2  personal    chatgpt   █░░░░ 12%      53m       ██░░░ 38%     5d 8h         —
 
 Activate token (enter number, or q to quit): _
 ```
@@ -175,7 +175,9 @@ If there is nothing staged after `git add .`, `push` exits successfully without 
 
 # How usage data works
 
-Quota is fetched from `https://chatgpt.com/backend-api/wham/usage` using the `access_token` stored in each profile's `auth.json`. The list view still shows standard 5-hour and weekly columns, but when the API provides `limit_window_seconds` the CLI classifies each window by duration instead of assuming `primary_window=5h` and `secondary_window=weekly`. If the API omits `limit_window_seconds`, the parser falls back to the legacy positional mapping for backwards compatibility. If the API also returns named limits under `additional_rate_limits`, the CLI renders those as extra columns using the same duration-aware logic. The current UI shortens `GPT-5.3-Codex-Spark` to `Spark` so the table stays readable on narrow terminals:
+Quota is fetched from `https://chatgpt.com/backend-api/wham/usage` using the `access_token` stored in each profile's `auth.json`. Earned usage-limit reset details are fetched from `https://chatgpt.com/backend-api/wham/rate-limit-reset-credits`, matching the data shown by Codex's `/usage` flow. These are reset credits that can reset eligible usage windows; they are separate from the normal time when a quota window resets automatically.
+
+The list view still shows standard 5-hour and weekly columns, but when the API provides `limit_window_seconds` the CLI classifies each window by duration instead of assuming `primary_window=5h` and `secondary_window=weekly`. If the API omits `limit_window_seconds`, the parser falls back to the legacy positional mapping for backwards compatibility. If the API also returns named limits under `additional_rate_limits`, the CLI renders those as extra columns using the same duration-aware logic. The current UI shortens `GPT-5.3-Codex-Spark` to `Spark` so the table stays readable on narrow terminals:
 
 | Column | Window | Description |
 |--------|--------|-------------|
@@ -187,14 +189,19 @@ Quota is fetched from `https://chatgpt.com/backend-api/wham/usage` using the `ac
 | **Spark Left** | API-defined | Time remaining until that named limit's primary window resets |
 | **Spark Weekly** | API-defined | Weekly usage for that named limit when available |
 | **Spark Weekly Left** | API-defined | Time remaining until that named limit's weekly window resets |
+| **Reset Expires** | Account-level | Local expiration date for each available earned usage-limit reset, formatted like `Aug 5` |
 
 - Tokens are automatically refreshed if they are older than 8 days
 - Unknown or duplicate API windows are preserved as extra columns rather than silently relabeled or dropped
 - `api_key` mode profiles show `N/A` (no quota limits apply)
 - Expired or revoked tokens show `expired` in red
 - Reset countdowns render compact durations such as `53m`, `4h 12m`, or `2d 3h`
+- Available usage-limit resets are ordered by soonest expiration and shown as abbreviated month plus day; resets without an expiration show `Does not expire`
+- If reset-detail lookup fails, the reset-expiration column shows `Unavailable`
 
 If refresh succeeds, the local stored profile is updated with the new tokens and a fresh `last_refresh` timestamp.
+
+This utility reports reset availability but does not redeem a reset. Use Codex's `/usage` menu when you want to consume one.
 
 # File layout
 

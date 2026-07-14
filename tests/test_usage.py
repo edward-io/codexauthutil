@@ -11,8 +11,17 @@ import httpx
 
 import codexauth.usage as usage_module
 import codexauth.store as store_module
-from codexauth.usage import fetch_usage, fetch_all_usage, UsageFetchSummary, UsageResult, USAGE_URL
-from codexauth.usage import _parse_usage_windows, _parse_additional_rate_limits
+from codexauth.usage import (
+    RESET_CREDITS_URL,
+    USAGE_URL,
+    UsageFetchSummary,
+    UsageResult,
+    _parse_additional_rate_limits,
+    _parse_reset_credit_details,
+    _parse_usage_windows,
+    fetch_all_usage,
+    fetch_usage,
+)
 
 FRESH_PROFILE = {
     "auth_mode": "chatgpt",
@@ -46,6 +55,96 @@ async def test_fetch_usage_success():
     assert result.secondary_reset_at == datetime.fromtimestamp(9999999999, tz=timezone.utc)
     assert result.error is None
     assert refreshed is False
+
+
+@pytest.mark.asyncio
+@respx.mock
+async def test_fetch_usage_parses_available_reset_credits_and_expirations():
+    usage_response = {
+        **USAGE_RESPONSE,
+        "rate_limit_reset_credits": {"available_count": 3},
+    }
+    respx.get(USAGE_URL).mock(return_value=httpx.Response(200, json=usage_response))
+    respx.get(RESET_CREDITS_URL).mock(
+        return_value=httpx.Response(
+            200,
+            json={
+                "credits": [
+                    {
+                        "id": "never-expires",
+                        "reset_type": "codex_rate_limits",
+                        "status": "available",
+                        "granted_at": "2026-06-18T00:00:00Z",
+                        "expires_at": None,
+                    },
+                    {
+                        "id": "expires-first",
+                        "reset_type": "codex_rate_limits",
+                        "status": "available",
+                        "granted_at": "2026-06-17T00:00:00Z",
+                        "expires_at": "2026-07-17T00:00:00Z",
+                        "title": "Full reset (Weekly + 5 hr)",
+                    },
+                    {
+                        "id": "already-used",
+                        "reset_type": "codex_rate_limits",
+                        "status": "redeemed",
+                        "granted_at": "2026-06-16T00:00:00Z",
+                        "expires_at": "2026-07-16T00:00:00Z",
+                    },
+                ],
+                "available_count": 2,
+            },
+        )
+    )
+
+    _, result, refreshed = await fetch_usage("work", FRESH_PROFILE)
+
+    assert result.reset_count == 2
+    assert [credit.id for credit in result.reset_credits] == [
+        "expires-first",
+        "never-expires",
+    ]
+    assert result.reset_credits[0].expires_at == datetime(
+        2026, 7, 17, tzinfo=timezone.utc
+    )
+    assert result.reset_credits[1].expires_at is None
+    assert refreshed is False
+
+
+@pytest.mark.asyncio
+@respx.mock
+async def test_fetch_usage_keeps_reset_count_when_credit_details_fail():
+    usage_response = {
+        **USAGE_RESPONSE,
+        "rate_limit_reset_credits": {"available_count": 3},
+    }
+    respx.get(USAGE_URL).mock(return_value=httpx.Response(200, json=usage_response))
+    respx.get(RESET_CREDITS_URL).mock(return_value=httpx.Response(500))
+
+    _, result, _ = await fetch_usage("work", FRESH_PROFILE)
+
+    assert result.reset_count == 3
+    assert result.reset_credits is None
+
+
+def test_parse_reset_credit_details_rejects_invalid_expiration():
+    result = _parse_reset_credit_details(
+        {
+            "credits": [
+                {
+                    "id": "credit-1",
+                    "reset_type": "codex_rate_limits",
+                    "status": "available",
+                    "granted_at": "2026-06-17T00:00:00Z",
+                    "expires_at": "not-a-date",
+                }
+            ],
+            "available_count": 1,
+        }
+    )
+
+    assert result is None
 
 
 @pytest.mark.asyncio
