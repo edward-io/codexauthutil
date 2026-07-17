@@ -200,7 +200,12 @@ def test_parse_usage_windows_uses_duration_to_classify_standard_windows():
 def test_parse_usage_windows_moves_weekly_primary_window_into_weekly_bucket():
     result = _parse_usage_windows(
         {
-            "primary_window": {"used_percent": 100, "reset_at": 1774679953, "limit_window_seconds": 604800},
+            "primary_window": {
+                "used_percent": 100,
+                "reset_at": 1774679953,
+                "reset_after_seconds": 604800,
+                "limit_window_seconds": 604800,
+            },
             "secondary_window": None,
         }
     )
@@ -208,6 +213,7 @@ def test_parse_usage_windows_moves_weekly_primary_window_into_weekly_bucket():
     assert "primary_window" not in result
     assert result["secondary_window"].used_pct == 100
     assert result["secondary_window"].limit_window_seconds == 604800
+    assert result["secondary_window"].reset_after_seconds == 604800
 
 
 def test_parse_usage_windows_keeps_legacy_primary_secondary_mapping_without_duration():

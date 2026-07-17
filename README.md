@@ -81,7 +81,7 @@ Or just
 ```
 ```
   #  Name        Mode      5h Used        5h Left   Weekly        Weekly Left   Reset Expires
-  1  work        chatgpt   ████░ 74%      4h 12m    ████░ 74%     2d 3h         Jul 17   ●
+  1  work        chatgpt   ████░ 74%      4h 12m    ████░ 74%     2d 3h         10d  5h  3m  ●
   2  personal    chatgpt   █░░░░ 12%      53m       ██░░░ 38%     5d 8h         —
 
 Activate token (enter number, or q to quit): _
@@ -105,6 +105,37 @@ is configured:
 ./codexauth.py list --all
 ./codexauth.py unhide old-work
 ```
+
+## Start unset weekly usage windows
+
+Some ChatGPT-backed accounts show no weekly reset time, or return the full seven-day
+`reset_after_seconds` value, until they make their first Codex request. Check every stored profile,
+including hidden profiles, and start only those weekly windows with:
+
+```bash
+./codexauth.py start-weekly
+```
+
+The command shows the matching profiles and asks for confirmation because it sends one small Codex
+request per account. It uses `gpt-5.4` by default, runs each request in a temporary isolated
+`CODEX_HOME` with a read-only sandbox, and does not switch the active profile. Any credentials that
+Codex refreshes during the request are saved back to the matching stored profile.
+
+Pass profile names to check only those accounts, use `--model` to override the model, or use `--yes`
+to skip confirmation:
+
+```bash
+./codexauth.py start-weekly work personal
+./codexauth.py start-weekly --model gpt-5.4 --yes
+```
+
+This command requires the `codex` CLI to be installed and available on `PATH`.
+
+The API reports both `reset_at` and second-precise `reset_after_seconds`. An unstarted seven-day
+placeholder reports the full `604800` seconds on every lookup, even though the table floors that to
+`6d 23h`; `start-weekly` triggers when that exact value is present or the reset time is null.
+`gpt-5.4-mini` is intentionally not the default: a live Plus-account test completed successfully
+without starting the main weekly bucket, while `gpt-5.4` started it.
 
 ## Activate a profile
 
@@ -189,14 +220,15 @@ The list view still shows standard 5-hour and weekly columns, but when the API p
 | **Spark Left** | API-defined | Time remaining until that named limit's primary window resets |
 | **Spark Weekly** | API-defined | Weekly usage for that named limit when available |
 | **Spark Weekly Left** | API-defined | Time remaining until that named limit's weekly window resets |
-| **Reset Expires** | Account-level | Local expiration date for each available earned usage-limit reset, formatted like `Aug 5` |
+| **Reset Expires** | Account-level | Time remaining before each available earned usage-limit reset expires, formatted in aligned day/hour/minute fields like `10d  5h  3m` |
 
 - Tokens are automatically refreshed if they are older than 8 days
 - Unknown or duplicate API windows are preserved as extra columns rather than silently relabeled or dropped
 - `api_key` mode profiles show `N/A` (no quota limits apply)
 - Expired or revoked tokens show `expired` in red
 - Reset countdowns render compact durations such as `53m`, `4h 12m`, or `2d 3h`
-- Available usage-limit resets are ordered by soonest expiration and shown as abbreviated month plus day; resets without an expiration show `Does not expire`
+- Available usage-limit resets are ordered by soonest expiration and shown as compact days, hours, and minutes remaining; resets without an expiration show `Does not expire`
+- Reset-expiration countdowns use the default text color beyond seven days, yellow at seven days or less, and red at one day or less
 - If reset-detail lookup fails, the reset-expiration column shows `Unavailable`
 
 If refresh succeeds, the local stored profile is updated with the new tokens and a fresh `last_refresh` timestamp.

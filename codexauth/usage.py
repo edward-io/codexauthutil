@@ -25,6 +25,7 @@ class UsageWindow:
     label: str | None = None
     short_label: str | None = None
     limit_window_seconds: int | None = None
+    reset_after_seconds: int | None = None
 
 
 @dataclass
@@ -181,6 +182,16 @@ def _parse_limit_window_seconds(value):
     return parsed if parsed > 0 else None
 
 
+def _parse_reset_after_seconds(value):
+    if value is None:
+        return None
+    try:
+        parsed = int(value)
+    except (TypeError, ValueError, OverflowError):
+        return None
+    return parsed if parsed >= 0 else None
+
+
 def _canonical_window_key(limit_window_seconds: int | None) -> str | None:
     if limit_window_seconds == SHORT_WINDOW_SECONDS:
         return "primary_window"
@@ -197,6 +208,7 @@ def _copy_window(window: UsageWindow, key: str) -> UsageWindow:
         label=window.label,
         short_label=window.short_label,
         limit_window_seconds=window.limit_window_seconds,
+        reset_after_seconds=window.reset_after_seconds,
     )
 
 
@@ -253,6 +265,7 @@ def _parse_usage_windows(rate_limit: dict) -> dict[str, UsageWindow]:
             used_pct=value.get("used_percent"),
             reset_at=_parse_reset_at(value.get("reset_at")),
             limit_window_seconds=_parse_limit_window_seconds(value.get("limit_window_seconds")),
+            reset_after_seconds=_parse_reset_after_seconds(value.get("reset_after_seconds")),
         )
     return _normalize_standard_windows(raw_windows)
 
@@ -293,6 +306,7 @@ def _parse_additional_rate_limits(items) -> dict[str, UsageWindow]:
                 label=label_base if key == "primary_window" else f"{label_base} Weekly",
                 short_label=short_label if key == "primary_window" else f"{short_label} W",
                 limit_window_seconds=_parse_limit_window_seconds(value.get("limit_window_seconds")),
+                reset_after_seconds=_parse_reset_after_seconds(value.get("reset_after_seconds")),
             )
 
         for normalized_key, window in _normalize_standard_windows(raw_windows).items():
@@ -307,6 +321,7 @@ def _parse_additional_rate_limits(items) -> dict[str, UsageWindow]:
                 label=window_label,
                 short_label=window_short_label,
                 limit_window_seconds=window.limit_window_seconds,
+                reset_after_seconds=window.reset_after_seconds,
             )
     return windows
 
