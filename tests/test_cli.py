@@ -46,8 +46,193 @@ def test_help(runner):
     assert "pull" in result.output
     assert "push" in result.output
     assert "status" in result.output
+    assert "start-weekly" in result.output
     assert "  import" not in result.output
     assert "  export" not in result.output
+
+
+def test_start_weekly_starts_only_unset_windows_and_includes_hidden(
+    runner, monkeypatch, sample_profile
+):
+    hidden = json.loads(json.dumps(sample_profile))
+    hidden["tokens"]["account_id"] = "hidden-account"
+    ready = json.loads(json.dumps(sample_profile))
+    ready["tokens"]["account_id"] = "ready-account"
+    store_module.save_profile("hidden", hidden)
+    store_module.save_profile("ready", ready)
+    store_module.hide_profile("hidden")
+    fetch_calls = []
+
+    async def fake_fetch_all_usage(profiles):
+        fetch_calls.append(sorted(profiles))
+        if len(fetch_calls) == 1:
+            return usage_module.UsageFetchSummary(
+                usage_map={
+                    "hidden": usage_module.UsageResult(),
+                    "ready": usage_module.UsageResult(
+                        secondary_pct=10,
+                        secondary_reset_at=datetime(2026, 7, 22, tzinfo=timezone.utc)
+                    ),
+                },
+                refreshed_profiles=[],
+            )
+        return usage_module.UsageFetchSummary(
+            usage_map={
+                "hidden": usage_module.UsageResult(
+                    secondary_pct=1,
+                    secondary_reset_at=datetime(2026, 7, 22, tzinfo=timezone.utc)
+                )
+            },
+            refreshed_profiles=[],
+        )
+
+    started = []
+
+    def fake_start_weekly_timer(profile, *, model):
+        started.append((profile["tokens"]["account_id"], model))
+        updated = json.loads(json.dumps(profile))
+        updated["tokens"]["access_token"] = "refreshed-access"
+        return cli_module.WeeklyStartResult(True, updated_profile=updated)
+
+    monkeypatch.setattr(cli_module, "fetch_all_usage", fake_fetch_all_usage)
+    monkeypatch.setattr(cli_module, "start_weekly_timer", fake_start_weekly_timer)
+
+    result = runner.invoke(cli, ["start-weekly", "--yes", "--model", "gpt-test"])
+
+    assert result.exit_code == 0
+    assert fetch_calls == [["hidden", "ready"], ["hidden"]]
+    assert started == [("hidden-account", "gpt-test")]
+    assert store_module.load_profile("hidden")["tokens"]["access_token"] == "refreshed-access"
+    assert "hidden: weekly window started" in result.output
+    assert "ready: weekly window started" not in result.output
+
+
+def test_start_weekly_does_not_run_without_confirmation(
+    runner, monkeypatch, saved_profile
+):
+    async def fake_fetch_all_usage(profiles):
+        return usage_module.UsageFetchSummary(
+            usage_map={"work": usage_module.UsageResult()},
+            refreshed_profiles=[],
+        )
+
+    monkeypatch.setattr(cli_module, "fetch_all_usage", fake_fetch_all_usage)
+    monkeypatch.setattr(
+        cli_module,
+        "start_weekly_timer",
+        lambda *args, **kwargs: pytest.fail("request should not run"),
+    )
+
+    result = runner.invoke(cli, ["start-weekly"], input="n\n")
+
+    assert result.exit_code == 0
+    assert "Cancelled" in result.output
+
+
+def test_start_weekly_includes_zero_percent_placeholder(
+    runner, monkeypatch, saved_profile
+):
+    fetch_count = 0
+
+    async def fake_fetch_all_usage(profiles):
+        nonlocal fetch_count
+        fetch_count += 1
+        return usage_module.UsageFetchSummary(
+            usage_map={
+                "work": usage_module.UsageResult(
+                    windows={
+                        "secondary_window": usage_module.UsageWindow(
+                            "secondary_window",
+                            used_pct=0,
+                            reset_at=datetime(2026, 7, 22, tzinfo=timezone.utc),
+                            limit_window_seconds=604800,
+                            reset_after_seconds=604800,
+                        )
+                    },
+                )
+            },
+            refreshed_profiles=[],
+        )
+
+    started = []
+    monkeypatch.setattr(cli_module, "fetch_all_usage", fake_fetch_all_usage)
+    monkeypatch.setattr(
+        cli_module,
+        "start_weekly_timer",
+        lambda profile, *, model: (
+            started.append(model) or cli_module.WeeklyStartResult(True)
+        ),
+    )
+
+    result = runner.invoke(cli, ["start-weekly", "--yes"])
+
+    assert result.exit_code == 0
+    assert started == ["gpt-5.4"]
+    assert fetch_count == 2
+    assert "request succeeded; API still reports the full 7-day placeholder" in result.output
+
+
+def test_start_weekly_skips_usage_errors_and_api_key_profiles(
+    runner, monkeypatch, sample_profile
+):
+    store_module.save_profile("expired", sample_profile)
+    store_module.save_profile(
+        "key", {"auth_mode": "api_key", "OPENAI_API_KEY": "sk-test"}
+    )
+
+    async def fake_fetch_all_usage(profiles):
+        return usage_module.UsageFetchSummary(
+            usage_map={
+                "expired": usage_module.UsageResult(error="expired"),
+                "key": usage_module.UsageResult(error="n/a"),
+            },
+            refreshed_profiles=[],
+        )
+
+    monkeypatch.setattr(cli_module, "fetch_all_usage", fake_fetch_all_usage)
+    monkeypatch.setattr(
+        cli_module,
+        "start_weekly_timer",
+        lambda *args, **kwargs: pytest.fail("request should not run"),
+    )
+
+    result = runner.invoke(cli, ["start-weekly", "--yes"])
+
+    assert result.exit_code == 0
+    assert "Could not determine weekly usage for: expired" in result.output
+    assert "No selected profiles have an unset weekly usage window" in result.output
+
+
+def test_start_weekly_does_not_claim_verified_when_usage_recheck_fails(
+    runner, monkeypatch, saved_profile
+):
+    fetch_count = 0
+
+    async def fake_fetch_all_usage(profiles):
+        nonlocal fetch_count
+        fetch_count += 1
+        usage = (
+            usage_module.UsageResult()
+            if fetch_count == 1
+            else usage_module.UsageResult(error="n/a")
+        )
+        return usage_module.UsageFetchSummary(
+            usage_map={"work": usage},
+            refreshed_profiles=[],
+        )
+
+    monkeypatch.setattr(cli_module, "fetch_all_usage", fake_fetch_all_usage)
+    monkeypatch.setattr(
+        cli_module,
+        "start_weekly_timer",
+        lambda profile, *, model: cli_module.WeeklyStartResult(True),
+    )
+
+    result = runner.invoke(cli, ["start-weekly", "--yes"])
+
+    assert result.exit_code == 0
+    assert "request succeeded; could not verify the weekly window" in result.output
+    assert "weekly window started" not in result.output
 
 
 def test_add_from_file(runner, sample_profile, tmp_path):

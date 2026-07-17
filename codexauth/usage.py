@@ -25,6 +25,7 @@ class UsageWindow:
     label: str | None = None
     short_label: str | None = None
     limit_window_seconds: int | None = None
+    reset_after_seconds: int | None = None
 
 
 @dataclass
@@ -34,6 +35,13 @@ class UsageResetCredit:
     granted_at: datetime | None = None
     title: str | None = None
     reset_type: str | None = None
+
+
+@dataclass
+class UsageCredits:
+    has_credits: bool
+    unlimited: bool
+    balance: str | None = None
 
 
 class UsageResult:
@@ -46,6 +54,7 @@ class UsageResult:
         windows=None,
         reset_count=None,
         reset_credits=None,
+        credits=None,
         error=None,
     ):
         resolved_windows = dict(windows or {})
@@ -68,6 +77,7 @@ class UsageResult:
         self.windows = resolved_windows
         self.reset_count = reset_count
         self.reset_credits = reset_credits
+        self.credits = credits
         self.error = error                # None | "expired" | "n/a"
 
     @property
@@ -130,6 +140,23 @@ def _parse_reset_credit_summary(value) -> int | None:
     return _parse_available_count(value.get("available_count"))
 
 
+def _parse_credits(value) -> UsageCredits | None:
+    if not isinstance(value, dict):
+        return None
+    has_credits = value.get("has_credits")
+    unlimited = value.get("unlimited")
+    balance = value.get("balance")
+    if not isinstance(has_credits, bool) or not isinstance(unlimited, bool):
+        return None
+    if balance is not None and not isinstance(balance, str):
+        return None
+    return UsageCredits(
+        has_credits=has_credits,
+        unlimited=unlimited,
+        balance=balance,
+    )
+
+
 def _parse_reset_credit_details(value) -> tuple[int, list[UsageResetCredit]] | None:
     if not isinstance(value, dict) or not isinstance(value.get("credits"), list):
         return None
@@ -181,6 +208,16 @@ def _parse_limit_window_seconds(value):
     return parsed if parsed > 0 else None
 
 
+def _parse_reset_after_seconds(value):
+    if value is None:
+        return None
+    try:
+        parsed = int(value)
+    except (TypeError, ValueError, OverflowError):
+        return None
+    return parsed if parsed >= 0 else None
+
+
 def _canonical_window_key(limit_window_seconds: int | None) -> str | None:
     if limit_window_seconds == SHORT_WINDOW_SECONDS:
         return "primary_window"
@@ -197,6 +234,7 @@ def _copy_window(window: UsageWindow, key: str) -> UsageWindow:
         label=window.label,
         short_label=window.short_label,
         limit_window_seconds=window.limit_window_seconds,
+        reset_after_seconds=window.reset_after_seconds,
     )
 
 
@@ -253,6 +291,7 @@ def _parse_usage_windows(rate_limit: dict) -> dict[str, UsageWindow]:
             used_pct=value.get("used_percent"),
             reset_at=_parse_reset_at(value.get("reset_at")),
             limit_window_seconds=_parse_limit_window_seconds(value.get("limit_window_seconds")),
+            reset_after_seconds=_parse_reset_after_seconds(value.get("reset_after_seconds")),
         )
     return _normalize_standard_windows(raw_windows)
 
@@ -293,6 +332,7 @@ def _parse_additional_rate_limits(items) -> dict[str, UsageWindow]:
                 label=label_base if key == "primary_window" else f"{label_base} Weekly",
                 short_label=short_label if key == "primary_window" else f"{short_label} W",
                 limit_window_seconds=_parse_limit_window_seconds(value.get("limit_window_seconds")),
+                reset_after_seconds=_parse_reset_after_seconds(value.get("reset_after_seconds")),
             )
 
         for normalized_key, window in _normalize_standard_windows(raw_windows).items():
@@ -307,6 +347,7 @@ def _parse_additional_rate_limits(items) -> dict[str, UsageWindow]:
                 label=window_label,
                 short_label=window_short_label,
                 limit_window_seconds=window.limit_window_seconds,
+                reset_after_seconds=window.reset_after_seconds,
             )
     return windows
 
@@ -387,6 +428,7 @@ async def fetch_usage(
         windows = _parse_usage_windows(rl)
         windows.update(_parse_additional_rate_limits(data.get("additional_rate_limits", [])))
         reset_count = _parse_reset_credit_summary(data.get("rate_limit_reset_credits"))
+        credits = _parse_credits(data.get("credits"))
         reset_credits = None
         if reset_credit_details is not None:
             reset_count, reset_credits = reset_credit_details
@@ -396,6 +438,7 @@ async def fetch_usage(
                 windows=windows,
                 reset_count=reset_count,
                 reset_credits=reset_credits,
+                credits=credits,
             ),
             refreshed,
         )

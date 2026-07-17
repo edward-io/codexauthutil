@@ -6,7 +6,7 @@ from rich.console import Console
 
 import codexauth.display as display_module
 from codexauth.display import render_table
-from codexauth.usage import UsageResetCredit, UsageResult, UsageWindow
+from codexauth.usage import UsageCredits, UsageResetCredit, UsageResult, UsageWindow
 
 
 def test_render_table_shows_usage_and_time_left_columns(monkeypatch):
@@ -47,7 +47,13 @@ def test_render_table_shows_usage_and_time_left_columns(monkeypatch):
 
 
 def test_render_table_shows_available_usage_resets_and_expirations(monkeypatch):
-    monkeypatch.setattr(display_module, "_as_local_time", lambda value: value)
+    class FrozenDateTime(datetime):
+        @classmethod
+        def now(cls, tz=None):
+            value = cls(2026, 7, 7, 4, 36, tzinfo=timezone.utc)
+            return value if tz is None else value.astimezone(tz)
+
+    monkeypatch.setattr(display_module, "datetime", FrozenDateTime)
 
     table = render_table(
         profiles=["work", "personal"],
@@ -78,9 +84,125 @@ def test_render_table_shows_available_usage_resets_and_expirations(monkeypatch):
 
     assert "Reset Expires" in output
     assert "2 available" not in output
-    assert "Jul 17" in output
+    assert "10d  5h  3m" in output
+    assert "Jul 17" not in output
     assert "2026-07-17" not in output
     assert "Does not expire" in output
+    assert table.columns[-2].justify == "right"
+
+
+def test_render_table_shows_rounded_credit_balance():
+    table = render_table(
+        profiles=["edward", "unlimited", "none"],
+        profile_data={
+            "edward": {"auth_mode": "chatgpt"},
+            "unlimited": {"auth_mode": "chatgpt"},
+            "none": {"auth_mode": "chatgpt"},
+        },
+        usage_map={
+            "edward": UsageResult(
+                credits=UsageCredits(
+                    has_credits=True,
+                    unlimited=False,
+                    balance="2311.1173137500",
+                )
+            ),
+            "unlimited": UsageResult(
+                credits=UsageCredits(has_credits=True, unlimited=True)
+            ),
+            "none": UsageResult(
+                credits=UsageCredits(has_credits=False, unlimited=False)
+            ),
+        },
+        active=None,
+        width=200,
+    )
+
+    console = Console(record=True, width=200)
+    console.print(table)
+    output = console.export_text()
+
+    assert "Credits" in output
+    assert "2311" in output
+    assert "2311.1173137500" not in output
+    assert "Unlimited" in output
+    assert "—" in output
+
+
+def test_credit_balance_display_matches_codex_states():
+    assert display_module._credit_balance_text(
+        UsageCredits(has_credits=True, unlimited=False, balance="17.5")
+    ) == "18"
+    assert display_module._credit_balance_text(
+        UsageCredits(has_credits=True, unlimited=False, balance=None)
+    ) == "Available"
+    assert display_module._credit_balance_text(
+        UsageCredits(has_credits=True, unlimited=False, balance="invalid")
+    ) == "Available"
+    assert display_module._credit_balance_text(
+        UsageCredits(has_credits=False, unlimited=False, balance="0")
+    ) == "—"
+
+
+def test_reset_expiration_duration_keeps_units_aligned():
+    now = datetime(2026, 7, 7, tzinfo=timezone.utc)
+
+    assert display_module._reset_credit_expiry_text(
+        now.replace(day=12, hour=9, minute=3), now=now
+    ) == " 5d  9h  3m"
+    assert display_module._reset_credit_expiry_text(
+        now.replace(hour=9, minute=3), now=now
+    ) == "     9h  3m"
+
+
+def test_usage_reset_expiration_color_reflects_urgency(monkeypatch):
+    class FrozenDateTime(datetime):
+        @classmethod
+        def now(cls, tz=None):
+            value = cls(2026, 7, 7, tzinfo=timezone.utc)
+            return value if tz is None else value.astimezone(tz)
+
+    monkeypatch.setattr(display_module, "datetime", FrozenDateTime)
+    usage = UsageResult(
+        reset_count=4,
+        reset_credits=[
+            UsageResetCredit(
+                id="default",
+                expires_at=datetime(2026, 7, 15, tzinfo=timezone.utc),
+            ),
+            UsageResetCredit(
+                id="yellow",
+                expires_at=datetime(2026, 7, 14, tzinfo=timezone.utc),
+            ),
+            UsageResetCredit(
+                id="red",
+                expires_at=datetime(2026, 7, 8, tzinfo=timezone.utc),
+            ),
+            UsageResetCredit(id="never", expires_at=None),
+        ],
+    )
+
+    output = display_module._fmt_usage_resets(usage)
+
+    assert output.splitlines() == [
+        " 8d  0h  0m",
+        "[yellow] 7d  0h  0m[/yellow]",
+        "[red] 1d  0h  0m[/red]",
+        "Does not expire",
+    ]
+
+
+def test_render_compact_table_right_aligns_reset_expiration():
+    table = render_table(
+        profiles=["work"],
+        profile_data={"work": {"auth_mode": "chatgpt"}},
+        usage_map={"work": UsageResult(reset_count=0, reset_credits=[])},
+        active=None,
+        width=100,
+    )
+
+    assert table.columns[-2].header == "Reset Exp."
+    assert table.columns[-2].justify == "right"
 
 
 def test_render_table_shows_reset_expiry_fallback_on_narrow_width():
@@ -97,6 +219,7 @@ def test_render_table_shows_reset_expiry_fallback_on_narrow_width():
     output = console.export_text()
 
     assert "reset  Unavailable" in output
+    assert "credits N/A" in output
 
 
 def test_render_table_uses_stacked_layout_on_narrow_width(monkeypatch):
@@ -432,7 +555,7 @@ def test_render_table_marks_name_red_when_weekly_only_usage_depleted_narrow(monk
     assert "\x1b[1;31muser@example.com\x1b[0m" in output
 
 
-def test_render_table_marks_name_red_when_both_standard_windows_are_na_full(monkeypatch):
+def test_render_table_does_not_mark_name_red_when_both_standard_windows_are_na_full(monkeypatch):
     class FrozenDateTime(datetime):
         @classmethod
         def now(cls, tz=None):
@@ -453,10 +576,43 @@ def test_render_table_marks_name_red_when_both_standard_windows_are_na_full(monk
     console.print(table)
     output = console.export_text(styles=True)
 
-    assert "\x1b[1;31muser@example.com\x1b[0m" in output
+    assert "\x1b[1;31muser@example.com\x1b[0m" not in output
 
 
-def test_render_table_marks_name_red_when_both_standard_windows_are_missing_narrow(monkeypatch):
+def test_render_table_marks_name_red_when_usage_is_expired():
+    table = render_table(
+        profiles=["cindy"],
+        profile_data={"cindy": {"auth_mode": "chatgpt"}},
+        usage_map={"cindy": UsageResult(error="expired")},
+        active=None,
+        width=160,
+    )
+
+    console = Console(record=True, width=160)
+    console.print(table)
+    output = console.export_text(styles=True)
+
+    assert "\x1b[1;31mcindy" in output
+
+
+def test_render_table_marks_hidden_name_red_when_usage_is_expired():
+    table = render_table(
+        profiles=["cindy"],
+        profile_data={"cindy": {"auth_mode": "chatgpt"}},
+        usage_map={"cindy": UsageResult(error="expired")},
+        active=None,
+        width=160,
+        hidden_profiles={"cindy"},
+    )
+
+    console = Console(record=True, width=160)
+    console.print(table)
+    output = console.export_text(styles=True)
+
+    assert "\x1b[1;31mcindy" in output
+
+
+def test_render_table_does_not_mark_name_red_when_both_windows_are_missing_narrow(monkeypatch):
     class FrozenDateTime(datetime):
         @classmethod
         def now(cls, tz=None):
@@ -477,10 +633,10 @@ def test_render_table_marks_name_red_when_both_standard_windows_are_missing_narr
     console.print(table)
     output = console.export_text(styles=True)
 
-    assert "\x1b[1;31muser@example.com\x1b[0m" in output
+    assert "\x1b[1;31muser@example.com\x1b[0m" not in output
 
 
-def test_render_table_marks_name_red_when_only_primary_window_is_na(monkeypatch):
+def test_render_table_does_not_mark_name_red_when_only_primary_window_is_na(monkeypatch):
     class FrozenDateTime(datetime):
         @classmethod
         def now(cls, tz=None):
@@ -512,4 +668,4 @@ def test_render_table_marks_name_red_when_only_primary_window_is_na(monkeypatch)
     console.print(table)
     output = console.export_text(styles=True)
 
-    assert "\x1b[1;31muser@example.com\x1b[0m" in output
+    assert "\x1b[1;31muser@example.com\x1b[0m" not in output

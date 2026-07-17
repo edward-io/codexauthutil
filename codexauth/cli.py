@@ -7,6 +7,7 @@ from datetime import datetime
 from pathlib import Path
 
 import click
+from rich.markup import escape
 
 from codexauth.config import get_sync_dir
 from codexauth.git_sync import GitCommandError, pull_sync_repo, push_sync_repo
@@ -40,6 +41,12 @@ from codexauth.sync import (
     list_blacklisted_profiles,
 )
 from codexauth.usage import UsageResult, fetch_all_usage
+from codexauth.weekly import (
+    DEFAULT_WEEKLY_START_MODEL,
+    WeeklyStartResult,
+    start_weekly_timer,
+    weekly_window_needs_start,
+)
 
 
 @click.group(
@@ -106,6 +113,128 @@ def cli(ctx):
 def list_cmd(no_interactive, no_usage, show_all):
     """List profiles, auto-refresh stale ChatGPT tokens during usage lookup, and offer activation."""
     _show_profiles(no_interactive=no_interactive, no_usage=no_usage, show_all=show_all)
+
+
+@cli.command(
+    "start-weekly",
+    short_help="Start unset weekly usage windows with a minimal Codex request.",
+    help=(
+        "Start unset weekly usage windows for stored ChatGPT-backed profiles.\n\n"
+        "This fetches current usage, then sends one minimal Codex request for each selected profile whose weekly "
+        "reset timestamp is missing or whose exact reset-after value is the full seven days. The requests run in "
+        "temporary isolated Codex homes and do not change the active profile. With no NAME arguments, all stored "
+        "profiles are checked, including hidden profiles."
+    ),
+)
+@click.argument("names", nargs=-1)
+@click.option(
+    "--model",
+    default=DEFAULT_WEEKLY_START_MODEL,
+    show_default=True,
+    help="Codex model used for the minimal request.",
+)
+@click.option("-y", "--yes", is_flag=True, help="Skip the confirmation prompt.")
+def start_weekly_cmd(names, model, yes):
+    """Start missing weekly timers without switching the active profile."""
+    stored_names = list_profiles()
+    if not stored_names:
+        console.print(
+            "[dim]No profiles stored. Run [bold]codexauth add <name>[/bold] to add one.[/dim]"
+        )
+        return
+
+    selected_names = list(dict.fromkeys(names)) if names else stored_names
+    unknown = sorted(set(selected_names) - set(stored_names))
+    if unknown:
+        raise click.ClickException(
+            "Profile{} not found: {}".format(
+                "s" if len(unknown) != 1 else "", ", ".join(unknown)
+            )
+        )
+
+    profiles = {name: load_profile(name) for name in selected_names}
+    with console.status("[dim]Checking weekly usage windows...[/dim]"):
+        usage_summary = asyncio.run(fetch_all_usage(profiles))
+
+    candidates = [
+        name
+        for name in selected_names
+        if profiles[name].get("auth_mode") == "chatgpt"
+        and weekly_window_needs_start(usage_summary.usage_map[name])
+    ]
+    unavailable = [
+        name
+        for name in selected_names
+        if profiles[name].get("auth_mode") == "chatgpt"
+        and usage_summary.usage_map[name].error is not None
+    ]
+    if unavailable:
+        console.print(
+            "[yellow]Could not determine weekly usage for:[/yellow] "
+            + ", ".join(escape(name) for name in unavailable)
+        )
+    if not candidates:
+        console.print("[dim]No selected profiles have an unset weekly usage window.[/dim]")
+        return
+
+    console.print(
+        "Weekly usage window is unset for: "
+        + ", ".join(escape(name) for name in candidates)
+    )
+    if not yes and not click.confirm(
+        f"Send one minimal Codex request for {len(candidates)} profile(s)?",
+        default=False,
+    ):
+        console.print("[dim]Cancelled.[/dim]")
+        return
+
+    results: dict[str, WeeklyStartResult] = {}
+    for name in candidates:
+        with console.status(f"[dim]Starting weekly window for {escape(name)}...[/dim]"):
+            result = start_weekly_timer(load_profile(name), model=model)
+        if result.updated_profile is not None:
+            save_profile(name, result.updated_profile)
+        results[name] = result
+
+    successful_names = [name for name, result in results.items() if result.succeeded]
+    verified_usage = {}
+    if successful_names:
+        refreshed_profiles = {name: load_profile(name) for name in successful_names}
+        with console.status("[dim]Verifying weekly usage windows...[/dim]"):
+            verified_usage = asyncio.run(fetch_all_usage(refreshed_profiles)).usage_map
+
+    failures = 0
+    for name in candidates:
+        result = results[name]
+        display_name = escape(name)
+        if not result.succeeded:
+            failures += 1
+            console.print(
+                f"[red]✗[/red] [bold]{display_name}[/bold]: "
+                f"{escape(result.detail or 'unknown error')}"
+            )
+        elif verified_usage[name].error is not None:
+            console.print(
+                f"[yellow]•[/yellow] [bold]{display_name}[/bold]: request succeeded; "
+                "could not verify the weekly window"
+            )
+        elif verified_usage[name].secondary_reset_at is None:
+            console.print(
+                f"[yellow]•[/yellow] [bold]{display_name}[/bold]: request succeeded; "
+                "weekly window is not visible yet"
+            )
+        elif weekly_window_needs_start(verified_usage[name]):
+            console.print(
+                f"[green]✓[/green] [bold]{display_name}[/bold]: request succeeded; "
+                "API still reports the full 7-day placeholder"
+            )
+        else:
+            console.print(
+                f"[green]✓[/green] [bold]{display_name}[/bold]: weekly window started"
+            )
+
+    if failures:
+        raise click.ClickException(f"Failed to start {failures} weekly usage window(s).")
 
 
 def _show_profiles(no_interactive: bool, no_usage: bool, show_all: bool = False) -> None:

@@ -48,6 +48,7 @@ The system is organized into a few focused modules:
 - `codexauth/config.py`: `.env` loading and sync-directory resolution.
 - `codexauth/store.py`: Filesystem storage, active profile tracking, and activation logic.
 - `codexauth/usage.py`: Usage retrieval and concurrent usage fetching across profiles.
+- `codexauth/weekly.py`: Isolated minimal Codex execution for starting unset weekly windows.
 - `codexauth/refresh.py`: Refresh-token handling for ChatGPT OAuth credentials.
 - `codexauth/oauth.py`: manual OAuth bootstrap helpers, callback validation, and code exchange.
 - `codexauth/display.py`: Rich-based table rendering and interactive prompt behavior.
@@ -110,7 +111,9 @@ the matching local stored profile should be considered disallowed.
   - time left until the 5-hour window resets
   - weekly usage percentage
   - time left until the weekly window resets
-- Shows each available earned usage-limit reset's local expiration date as abbreviated month plus day in a separate column, without displaying the available count.
+- Shows the compact time remaining before each available earned usage-limit reset expires (for example, `10d  5h  3m`) in a right-aligned column with fixed day/hour/minute positions, without displaying the available count.
+- Shows ChatGPT credits in a separate right-aligned column, rounding finite balances to the nearest whole credit to match Codex's status display and preserving `Unlimited`, `Available`, unavailable, and lookup-error states.
+- Uses the default text color for reset expirations beyond seven days, yellow for seven days or less, and red for one day or less.
 - Uses the full multi-column table on wide terminals, a compact table on medium widths, and a stacked per-profile layout on narrow screens so phone-sized terminals remain readable.
 - Can prompt the user to activate a profile interactively unless `--no-interactive` is passed.
 - Excludes hidden profiles by default. `--all` includes hidden profiles and
@@ -124,6 +127,27 @@ the matching local stored profile should be considered disallowed.
 - Performs a lightweight validity check by requiring `auth_mode` or `tokens`.
 - Copies the source auth file into local storage under the given name.
 - Preserves the source file's modified timestamp so imported profile age stays meaningful.
+
+### `codexauth start-weekly [name ...]`
+
+- Fetches live usage for the selected profiles, or every stored profile when no names are passed.
+- Includes hidden profiles when checking all stored profiles.
+- Selects only ChatGPT-backed profiles whose weekly window is missing, has no reset timestamp, or
+  reports `reset_after_seconds == 604800`. This exact API value identifies the full seven-day
+  placeholder without relying on the rounded table countdown.
+- Confirms once before sending requests unless `--yes` is passed.
+- Sends one minimal `hi` request per selected account with `gpt-5.4` by default; `--model` provides
+  an override. `gpt-5.4-mini` is not used by default because it can complete without charging the
+  main weekly bucket, leaving the placeholder unchanged.
+- Creates a private temporary `CODEX_HOME` and workspace for each request, writes only that
+  profile's auth file there, ignores user configuration and rules, uses an ephemeral session and a
+  read-only sandbox, and never changes the active profile.
+- Removes API-key environment variables from the child process so the temporary ChatGPT auth file
+  determines the identity.
+- Saves a temporary auth file back to the named profile if Codex refreshed its credentials, even
+  when the request itself fails or times out.
+- Fetches usage again after successful requests and reports whether the weekly window is visible;
+  the API may take a short time to reflect a successful request.
 
 ### `codexauth login [name]`
 

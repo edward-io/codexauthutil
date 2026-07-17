@@ -1,13 +1,14 @@
 """Rich-based rendering and interactive menu."""
 
 from datetime import datetime, timezone
+from decimal import Decimal, InvalidOperation, ROUND_HALF_UP
 
 from rich import box
 from rich.console import Console, Group
 from rich.table import Table
 from rich.text import Text
 
-from codexauth.usage import UsageResult, UsageWindow
+from codexauth.usage import UsageCredits, UsageResult, UsageWindow
 
 console = Console()
 
@@ -96,15 +97,39 @@ def _fmt_time_left_narrow(reset_at, error: str | None, now: datetime | None = No
     return padded
 
 
-def _as_local_time(value: datetime) -> datetime:
-    return value.astimezone()
-
-
-def _reset_credit_expiry_text(expires_at: datetime | None) -> str:
+def _reset_credit_expiry_text(
+    expires_at: datetime | None,
+    now: datetime | None = None,
+) -> str:
     if expires_at is None:
         return "Does not expire"
-    local_expiry = _as_local_time(expires_at)
-    return f"{local_expiry:%b} {local_expiry.day}"
+
+    current = now or datetime.now(timezone.utc)
+    if current.tzinfo is None:
+        current = current.replace(tzinfo=timezone.utc)
+    seconds = int((expires_at - current).total_seconds())
+    if seconds <= 0:
+        return "expired"
+
+    days, remainder = divmod(seconds, 24 * 3600)
+    hours, remainder = divmod(remainder, 3600)
+    minutes = remainder // 60
+    day_text = f"{days:>2}d " if days else "    "
+    return f"{day_text}{hours:>2}h {minutes:>2}m"
+
+
+def _reset_credit_expiry_style(
+    expires_at: datetime | None,
+    now: datetime,
+) -> str | None:
+    if expires_at is None:
+        return None
+    seconds = (expires_at - now).total_seconds()
+    if seconds <= 24 * 3600:
+        return "red"
+    if seconds <= 7 * 24 * 3600:
+        return "yellow"
+    return None
 
 
 def _fmt_usage_resets(usage: UsageResult) -> str:
@@ -121,13 +146,40 @@ def _fmt_usage_resets(usage: UsageResult) -> str:
         return "[dim]Unavailable[/dim]"
 
     displayed_credits = usage.reset_credits[:count]
-    lines = list(
-        f"[green]{_reset_credit_expiry_text(credit.expires_at)}[/green]"
-        for credit in displayed_credits
-    )
+    now = datetime.now(timezone.utc)
+    lines = []
+    for credit in displayed_credits:
+        text = _reset_credit_expiry_text(credit.expires_at, now=now)
+        style = _reset_credit_expiry_style(credit.expires_at, now)
+        lines.append(f"[{style}]{text}[/{style}]" if style else text)
     if len(displayed_credits) < count:
         lines.append("[dim]Unavailable[/dim]")
     return "\n".join(lines)
+
+
+def _credit_balance_text(credits: UsageCredits) -> str:
+    if credits.unlimited:
+        return "Unlimited"
+    if not credits.has_credits:
+        return "—"
+    if credits.balance is None:
+        return "Available"
+    try:
+        balance = Decimal(credits.balance.strip())
+    except InvalidOperation:
+        return "Available"
+    if not balance.is_finite() or balance <= 0:
+        return "Available"
+    return str(int(balance.quantize(Decimal("1"), rounding=ROUND_HALF_UP)))
+
+
+def _fmt_credits(usage: UsageResult) -> str:
+    if usage.error == "expired":
+        return "[red]expired[/red]"
+    if usage.error or usage.credits is None:
+        return "[dim]N/A[/dim]"
+    text = _credit_balance_text(usage.credits)
+    return f"[dim]{text}[/dim]" if text == "—" else text
 
 
 def _active_marker(name: str, active: str | None) -> str:
@@ -138,18 +190,16 @@ def _is_standard_window_depleted(window: UsageWindow) -> bool:
     return window.used_pct is not None and window.used_pct >= 100
 
 
-def _is_standard_window_unavailable(window: UsageWindow) -> bool:
-    return window.used_pct is None and window.reset_at is None
-
-
 def _is_profile_depleted(usage: UsageResult) -> bool:
+    if usage.error == "expired":
+        return True
     standard_windows = [_get_window(usage, key) for key in ("primary_window", "secondary_window")]
-    return any(_is_standard_window_depleted(window) for window in standard_windows) or all(
-        _is_standard_window_unavailable(window) for window in standard_windows
-    ) or _is_standard_window_unavailable(_get_window(usage, "primary_window"))
+    return any(_is_standard_window_depleted(window) for window in standard_windows)
 
 
 def _is_hidden_profile_urgent(usage: UsageResult) -> bool:
+    if usage.error == "expired":
+        return True
     weekly_window = _get_window(usage, "secondary_window")
     return weekly_window.used_pct is not None and weekly_window.used_pct >= 99
 
@@ -253,7 +303,8 @@ def _render_full_table(
         spec = _spec_for_key(usage_map, key)
         table.add_column(spec["full_pct"], min_width=9, max_width=10)
         table.add_column(spec["full_left"], min_width=10, max_width=12)
-    table.add_column("Reset Expires", min_width=10, max_width=15)
+    table.add_column("Credits", min_width=7, max_width=10, justify="right")
+    table.add_column("Reset Expires", min_width=10, max_width=15, justify="right")
     table.add_column("", width=2)
 
     for i, name in enumerate(profiles, 1):
@@ -272,6 +323,7 @@ def _render_full_table(
                     _fmt_time_left(window.reset_at, u.error),
                 ]
             )
+        row.append(_fmt_credits(u))
         row.append(_fmt_usage_resets(u))
         row.append(_active_marker(name, active))
         table.add_row(*row)
@@ -300,7 +352,8 @@ def _render_compact_table(
         spec = _spec_for_key(usage_map, key)
         table.add_column(spec["compact_pct"], min_width=10)
         table.add_column(spec["compact_left"], min_width=5)
-    table.add_column("Reset Exp.", min_width=10, max_width=15)
+    table.add_column("Credits", min_width=7, max_width=10, justify="right")
+    table.add_column("Reset Exp.", min_width=10, max_width=15, justify="right")
     table.add_column("", width=1)
 
     for i, name in enumerate(profiles, 1):
@@ -319,6 +372,7 @@ def _render_compact_table(
                     _fmt_time_left(window.reset_at, u.error),
                 ]
             )
+        row.append(_fmt_credits(u))
         row.append(_fmt_usage_resets(u))
         row.append(_active_marker(name, active))
         table.add_row(*row)
@@ -359,6 +413,10 @@ def _render_narrow_profiles(
                 f"/{_fmt_time_left_narrow(window.reset_at, u.error)}"
             )
             renders.append(usage)
+        credits = Text.from_markup(
+            f"[bold]{'credits':<6}[/bold] {_fmt_credits(u)}"
+        )
+        renders.append(credits)
         resets = Text.from_markup(
             f"[bold]{'reset':<6}[/bold] {_fmt_usage_resets(u)}"
         )

@@ -59,6 +59,30 @@ async def test_fetch_usage_success():
 
 @pytest.mark.asyncio
 @respx.mock
+async def test_fetch_usage_parses_credit_balance():
+    usage_response = {
+        **USAGE_RESPONSE,
+        "credits": {
+            "has_credits": True,
+            "unlimited": False,
+            "balance": "2311.1173137500",
+            "approx_local_messages": [578, 3004],
+            "approx_cloud_messages": [92, 578],
+        },
+    }
+    respx.get(USAGE_URL).mock(return_value=httpx.Response(200, json=usage_response))
+
+    _, result, _ = await fetch_usage("edward", FRESH_PROFILE)
+
+    assert result.credits == usage_module.UsageCredits(
+        has_credits=True,
+        unlimited=False,
+        balance="2311.1173137500",
+    )
+
+
+@pytest.mark.asyncio
+@respx.mock
 async def test_fetch_usage_parses_available_reset_credits_and_expirations():
     usage_response = {
         **USAGE_RESPONSE,
@@ -200,7 +224,12 @@ def test_parse_usage_windows_uses_duration_to_classify_standard_windows():
 def test_parse_usage_windows_moves_weekly_primary_window_into_weekly_bucket():
     result = _parse_usage_windows(
         {
-            "primary_window": {"used_percent": 100, "reset_at": 1774679953, "limit_window_seconds": 604800},
+            "primary_window": {
+                "used_percent": 100,
+                "reset_at": 1774679953,
+                "reset_after_seconds": 604800,
+                "limit_window_seconds": 604800,
+            },
             "secondary_window": None,
         }
     )
@@ -208,6 +237,7 @@ def test_parse_usage_windows_moves_weekly_primary_window_into_weekly_bucket():
     assert "primary_window" not in result
     assert result["secondary_window"].used_pct == 100
     assert result["secondary_window"].limit_window_seconds == 604800
+    assert result["secondary_window"].reset_after_seconds == 604800
 
 
 def test_parse_usage_windows_keeps_legacy_primary_secondary_mapping_without_duration():
