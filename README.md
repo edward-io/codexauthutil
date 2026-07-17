@@ -80,9 +80,9 @@ Or just
 ./codexauth.py
 ```
 ```
-  #  Name        Mode      5h Used        5h Left   Weekly        Weekly Left   Reset Expires
-  1  work        chatgpt   ████░ 74%      4h 12m    ████░ 74%     2d 3h         10d  5h  3m  ●
-  2  personal    chatgpt   █░░░░ 12%      53m       ██░░░ 38%     5d 8h         —
+  #  Name        Mode      5h Used        5h Left   Weekly        Weekly Left   Credits   Reset Expires
+  1  work        chatgpt   ████░ 74%      4h 12m    ████░ 74%     2d 3h            2311   10d  5h  3m  ●
+  2  personal    chatgpt   █░░░░ 12%      53m       ██░░░ 38%     5d 8h                —              —
 
 Activate token (enter number, or q to quit): _
 ```
@@ -220,6 +220,7 @@ The list view still shows standard 5-hour and weekly columns, but when the API p
 | **Spark Left** | API-defined | Time remaining until that named limit's primary window resets |
 | **Spark Weekly** | API-defined | Weekly usage for that named limit when available |
 | **Spark Weekly Left** | API-defined | Time remaining until that named limit's weekly window resets |
+| **Credits** | Account-level | Rounded ChatGPT credit balance, matching Codex's status display |
 | **Reset Expires** | Account-level | Time remaining before each available earned usage-limit reset expires, formatted in aligned day/hour/minute fields like `10d  5h  3m` |
 
 - Tokens are automatically refreshed if they are older than 8 days

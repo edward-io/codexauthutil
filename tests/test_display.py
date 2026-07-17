@@ -6,7 +6,7 @@ from rich.console import Console
 
 import codexauth.display as display_module
 from codexauth.display import render_table
-from codexauth.usage import UsageResetCredit, UsageResult, UsageWindow
+from codexauth.usage import UsageCredits, UsageResetCredit, UsageResult, UsageWindow
 
 
 def test_render_table_shows_usage_and_time_left_columns(monkeypatch):
@@ -91,6 +91,59 @@ def test_render_table_shows_available_usage_resets_and_expirations(monkeypatch):
     assert table.columns[-2].justify == "right"
 
 
+def test_render_table_shows_rounded_credit_balance():
+    table = render_table(
+        profiles=["edward", "unlimited", "none"],
+        profile_data={
+            "edward": {"auth_mode": "chatgpt"},
+            "unlimited": {"auth_mode": "chatgpt"},
+            "none": {"auth_mode": "chatgpt"},
+        },
+        usage_map={
+            "edward": UsageResult(
+                credits=UsageCredits(
+                    has_credits=True,
+                    unlimited=False,
+                    balance="2311.1173137500",
+                )
+            ),
+            "unlimited": UsageResult(
+                credits=UsageCredits(has_credits=True, unlimited=True)
+            ),
+            "none": UsageResult(
+                credits=UsageCredits(has_credits=False, unlimited=False)
+            ),
+        },
+        active=None,
+        width=200,
+    )
+
+    console = Console(record=True, width=200)
+    console.print(table)
+    output = console.export_text()
+
+    assert "Credits" in output
+    assert "2311" in output
+    assert "2311.1173137500" not in output
+    assert "Unlimited" in output
+    assert "—" in output
+
+
+def test_credit_balance_display_matches_codex_states():
+    assert display_module._credit_balance_text(
+        UsageCredits(has_credits=True, unlimited=False, balance="17.5")
+    ) == "18"
+    assert display_module._credit_balance_text(
+        UsageCredits(has_credits=True, unlimited=False, balance=None)
+    ) == "Available"
+    assert display_module._credit_balance_text(
+        UsageCredits(has_credits=True, unlimited=False, balance="invalid")
+    ) == "Available"
+    assert display_module._credit_balance_text(
+        UsageCredits(has_credits=False, unlimited=False, balance="0")
+    ) == "—"
+
+
 def test_reset_expiration_duration_keeps_units_aligned():
     now = datetime(2026, 7, 7, tzinfo=timezone.utc)
 
@@ -166,6 +219,7 @@ def test_render_table_shows_reset_expiry_fallback_on_narrow_width():
     output = console.export_text()
 
     assert "reset  Unavailable" in output
+    assert "credits N/A" in output
 
 
 def test_render_table_uses_stacked_layout_on_narrow_width(monkeypatch):

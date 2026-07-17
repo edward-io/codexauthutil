@@ -112,6 +112,7 @@ the matching local stored profile should be considered disallowed.
   - weekly usage percentage
   - time left until the weekly window resets
 - Shows the compact time remaining before each available earned usage-limit reset expires (for example, `10d  5h  3m`) in a right-aligned column with fixed day/hour/minute positions, without displaying the available count.
+- Shows ChatGPT credits in a separate right-aligned column, rounding finite balances to the nearest whole credit to match Codex's status display and preserving `Unlimited`, `Available`, unavailable, and lookup-error states.
 - Uses the default text color for reset expirations beyond seven days, yellow for seven days or less, and red for one day or less.
 - Uses the full multi-column table on wide terminals, a compact table on medium widths, and a stacked per-profile layout on narrow screens so phone-sized terminals remain readable.
 - Can prompt the user to activate a profile interactively unless `--no-interactive` is passed.

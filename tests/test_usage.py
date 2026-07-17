@@ -59,6 +59,30 @@ async def test_fetch_usage_success():
 
 @pytest.mark.asyncio
 @respx.mock
+async def test_fetch_usage_parses_credit_balance():
+    usage_response = {
+        **USAGE_RESPONSE,
+        "credits": {
+            "has_credits": True,
+            "unlimited": False,
+            "balance": "2311.1173137500",
+            "approx_local_messages": [578, 3004],
+            "approx_cloud_messages": [92, 578],
+        },
+    }
+    respx.get(USAGE_URL).mock(return_value=httpx.Response(200, json=usage_response))
+
+    _, result, _ = await fetch_usage("edward", FRESH_PROFILE)
+
+    assert result.credits == usage_module.UsageCredits(
+        has_credits=True,
+        unlimited=False,
+        balance="2311.1173137500",
+    )
+
+
+@pytest.mark.asyncio
+@respx.mock
 async def test_fetch_usage_parses_available_reset_credits_and_expirations():
     usage_response = {
         **USAGE_RESPONSE,

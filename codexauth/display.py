@@ -1,13 +1,14 @@
 """Rich-based rendering and interactive menu."""
 
 from datetime import datetime, timezone
+from decimal import Decimal, InvalidOperation, ROUND_HALF_UP
 
 from rich import box
 from rich.console import Console, Group
 from rich.table import Table
 from rich.text import Text
 
-from codexauth.usage import UsageResult, UsageWindow
+from codexauth.usage import UsageCredits, UsageResult, UsageWindow
 
 console = Console()
 
@@ -156,6 +157,31 @@ def _fmt_usage_resets(usage: UsageResult) -> str:
     return "\n".join(lines)
 
 
+def _credit_balance_text(credits: UsageCredits) -> str:
+    if credits.unlimited:
+        return "Unlimited"
+    if not credits.has_credits:
+        return "—"
+    if credits.balance is None:
+        return "Available"
+    try:
+        balance = Decimal(credits.balance.strip())
+    except InvalidOperation:
+        return "Available"
+    if not balance.is_finite() or balance <= 0:
+        return "Available"
+    return str(int(balance.quantize(Decimal("1"), rounding=ROUND_HALF_UP)))
+
+
+def _fmt_credits(usage: UsageResult) -> str:
+    if usage.error == "expired":
+        return "[red]expired[/red]"
+    if usage.error or usage.credits is None:
+        return "[dim]N/A[/dim]"
+    text = _credit_balance_text(usage.credits)
+    return f"[dim]{text}[/dim]" if text == "—" else text
+
+
 def _active_marker(name: str, active: str | None) -> str:
     return "[green]●[/green]" if name == active else ""
 
@@ -277,6 +303,7 @@ def _render_full_table(
         spec = _spec_for_key(usage_map, key)
         table.add_column(spec["full_pct"], min_width=9, max_width=10)
         table.add_column(spec["full_left"], min_width=10, max_width=12)
+    table.add_column("Credits", min_width=7, max_width=10, justify="right")
     table.add_column("Reset Expires", min_width=10, max_width=15, justify="right")
     table.add_column("", width=2)
 
@@ -296,6 +323,7 @@ def _render_full_table(
                     _fmt_time_left(window.reset_at, u.error),
                 ]
             )
+        row.append(_fmt_credits(u))
         row.append(_fmt_usage_resets(u))
         row.append(_active_marker(name, active))
         table.add_row(*row)
@@ -324,6 +352,7 @@ def _render_compact_table(
         spec = _spec_for_key(usage_map, key)
         table.add_column(spec["compact_pct"], min_width=10)
         table.add_column(spec["compact_left"], min_width=5)
+    table.add_column("Credits", min_width=7, max_width=10, justify="right")
     table.add_column("Reset Exp.", min_width=10, max_width=15, justify="right")
     table.add_column("", width=1)
 
@@ -343,6 +372,7 @@ def _render_compact_table(
                     _fmt_time_left(window.reset_at, u.error),
                 ]
             )
+        row.append(_fmt_credits(u))
         row.append(_fmt_usage_resets(u))
         row.append(_active_marker(name, active))
         table.add_row(*row)
@@ -383,6 +413,10 @@ def _render_narrow_profiles(
                 f"/{_fmt_time_left_narrow(window.reset_at, u.error)}"
             )
             renders.append(usage)
+        credits = Text.from_markup(
+            f"[bold]{'credits':<6}[/bold] {_fmt_credits(u)}"
+        )
+        renders.append(credits)
         resets = Text.from_markup(
             f"[bold]{'reset':<6}[/bold] {_fmt_usage_resets(u)}"
         )

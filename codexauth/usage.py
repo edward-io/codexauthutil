@@ -37,6 +37,13 @@ class UsageResetCredit:
     reset_type: str | None = None
 
 
+@dataclass
+class UsageCredits:
+    has_credits: bool
+    unlimited: bool
+    balance: str | None = None
+
+
 class UsageResult:
     def __init__(
         self,
@@ -47,6 +54,7 @@ class UsageResult:
         windows=None,
         reset_count=None,
         reset_credits=None,
+        credits=None,
         error=None,
     ):
         resolved_windows = dict(windows or {})
@@ -69,6 +77,7 @@ class UsageResult:
         self.windows = resolved_windows
         self.reset_count = reset_count
         self.reset_credits = reset_credits
+        self.credits = credits
         self.error = error                # None | "expired" | "n/a"
 
     @property
@@ -129,6 +138,23 @@ def _parse_reset_credit_summary(value) -> int | None:
     if not isinstance(value, dict):
         return None
     return _parse_available_count(value.get("available_count"))
+
+
+def _parse_credits(value) -> UsageCredits | None:
+    if not isinstance(value, dict):
+        return None
+    has_credits = value.get("has_credits")
+    unlimited = value.get("unlimited")
+    balance = value.get("balance")
+    if not isinstance(has_credits, bool) or not isinstance(unlimited, bool):
+        return None
+    if balance is not None and not isinstance(balance, str):
+        return None
+    return UsageCredits(
+        has_credits=has_credits,
+        unlimited=unlimited,
+        balance=balance,
+    )
 
 
 def _parse_reset_credit_details(value) -> tuple[int, list[UsageResetCredit]] | None:
@@ -402,6 +428,7 @@ async def fetch_usage(
         windows = _parse_usage_windows(rl)
         windows.update(_parse_additional_rate_limits(data.get("additional_rate_limits", [])))
         reset_count = _parse_reset_credit_summary(data.get("rate_limit_reset_credits"))
+        credits = _parse_credits(data.get("credits"))
         reset_credits = None
         if reset_credit_details is not None:
             reset_count, reset_credits = reset_credit_details
@@ -411,6 +438,7 @@ async def fetch_usage(
                 windows=windows,
                 reset_count=reset_count,
                 reset_credits=reset_credits,
+                credits=credits,
             ),
             refreshed,
         )
